@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.0
+// @version        1.0.1
 // ==/UserScript==
 
 /*
@@ -39,9 +39,23 @@
   const KEY_PARENT = "zenNestedTabsParent";
   const KEY_COLLAPSED = "zenNestedTabsCollapsed";
 
+  // browser.xhtml already exposes SessionStore as a window global. The module
+  // moved from resource:///modules/ to moz-src:/// in newer Firefox, so only
+  // import it ourselves as a fallback.
   const lazy = {};
-  ChromeUtils.defineESModuleGetters(lazy, {
-    SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+  ChromeUtils.defineLazyGetter(lazy, "SessionStore", () => {
+    if (window.SessionStore) {
+      return window.SessionStore;
+    }
+    for (const url of [
+      "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
+      "resource:///modules/sessionstore/SessionStore.sys.mjs",
+    ]) {
+      try {
+        return ChromeUtils.importESModule(url).SessionStore;
+      } catch (e) {}
+    }
+    throw new Error("[Zen Nested Tabs] SessionStore module not found");
   });
 
   const newId = () => Services.uuid.generateUUID().toString().slice(1, -1);
