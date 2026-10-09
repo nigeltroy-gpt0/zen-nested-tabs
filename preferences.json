@@ -1,0 +1,31 @@
+[
+  {
+    "property": "mod.nestedtabs.auto_nest",
+    "label": "Nest tabs opened from a link under the tab that opened them",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.nestedtabs.show_guides",
+    "label": "Show faint indent guide lines",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.nestedtabs.show_count",
+    "label": "Show the number of hidden tabs on collapsed parents",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.nestedtabs.close_behavior",
+    "label": "When closing a parent tab",
+    "type": "dropdown",
+    "placeholder": "Select behavior",
+    "defaultValue": "promote",
+    "options": [
+      { "label": "Move its children up one level", "value": "promote" },
+      { "label": "Close the whole tree if it is collapsed", "value": "close_collapsed" }
+    ]
+  }
+]

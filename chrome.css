@@ -1,0 +1,168 @@
+/* Zen Nested Tabs
+ *
+ * Visual layer for the tab tree. The JS (js/nested-tabs.uc.js) only sets
+ * attributes on tabs; everything you see is styled here:
+ *
+ *   nt-depth="N" + --nt-depth  nesting level (0 = root)
+ *   nt-has-children            tab is a parent, shows the caret
+ *   nt-collapsed               parent whose subtree is folded
+ *   nt-hidden                  tab sits under a folded ancestor
+ *
+ * Essentials ([zen-essential]) never receive any of these.
+ */
+
+:root {
+  --nt-indent: 16px;
+  --nt-guide-color: color-mix(in srgb, currentColor 14%, transparent);
+  --nt-twisty-size: 16px;
+}
+
+/* ---------------------------------------------------------------------------
+   Indentation (only when the sidebar is expanded; icon-only mode stays flat)
+   --------------------------------------------------------------------------- */
+:root[zen-sidebar-expanded="true"] .tabbrowser-tab[nt-depth]:not([zen-essential], [zen-glance-tab]) {
+  margin-inline-start: calc(var(--nt-depth, 0) * var(--nt-indent)) !important;
+  transition: var(--zen-tabbox-element-indent-transition, margin-inline-start 0.1s ease-in-out);
+}
+
+/* Inside Zen folders, stack our indent on top of the folder's own indent. */
+:root[zen-sidebar-expanded="true"] zen-folder > .tab-group-container > .tabbrowser-tab[nt-depth]:not([zen-essential]) {
+  margin-inline-start: calc(var(--zen-folder-indent, 14px) + var(--nt-depth, 0) * var(--nt-indent)) !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Collapsed subtrees
+   --------------------------------------------------------------------------- */
+.tabbrowser-tab[nt-hidden]:not([zen-essential]) {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tabbrowser-tab[nt-depth]:not([nt-depth="0"], [zen-essential]) {
+    transition:
+      opacity 0.16s ease,
+      translate 0.16s ease,
+      var(--zen-tabbox-element-indent-transition, margin-inline-start 0.1s ease-in-out);
+
+    @starting-style {
+      opacity: 0;
+      translate: 0 -4px;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Caret (twisty)
+   --------------------------------------------------------------------------- */
+.tabbrowser-tab .nt-twisty {
+  display: none;
+}
+
+:root[zen-sidebar-expanded="true"] .tabbrowser-tab[nt-has-children]:not([zen-essential]) .nt-twisty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--nt-twisty-size);
+  height: var(--nt-twisty-size);
+  margin-inline-start: -6px;
+  margin-inline-end: 2px;
+  border-radius: 4px;
+  opacity: 0.55;
+  -moz-window-dragging: no-drag;
+  cursor: default;
+  transition:
+    opacity 0.12s ease,
+    background-color 0.12s ease;
+
+  &::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    background-color: currentColor;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.2 5.6a1 1 0 0 1 1.4 0L8 9l3.4-3.4a1 1 0 1 1 1.4 1.4l-4.1 4.1a1 1 0 0 1-1.4 0L3.2 7a1 1 0 0 1 0-1.4z'/%3E%3C/svg%3E") center / contain no-repeat;
+    transition: rotate 0.15s ease;
+  }
+
+  &:hover {
+    opacity: 1;
+    background-color: var(--zen-toolbar-element-bg-hover, rgba(127, 127, 127, 0.15));
+  }
+}
+
+.tabbrowser-tab[nt-collapsed] .nt-twisty::before {
+  rotate: -90deg;
+}
+
+:root:-moz-locale-dir(rtl) .tabbrowser-tab[nt-collapsed] .nt-twisty::before {
+  rotate: 90deg;
+}
+
+/* ---------------------------------------------------------------------------
+   Hidden-descendant counter on collapsed parents
+   --------------------------------------------------------------------------- */
+.tabbrowser-tab .nt-count {
+  display: none;
+}
+
+@media (-moz-pref("mod.nestedtabs.show_count")) {
+  :root[zen-sidebar-expanded="true"] .tabbrowser-tab[nt-collapsed][nt-has-children]:not([zen-essential]) .nt-count {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
+    margin-inline: 4px 2px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 600;
+    justify-content: center;
+    background-color: var(--zen-toolbar-element-bg, rgba(127, 127, 127, 0.15));
+    opacity: 0.8;
+  }
+
+  /* Leave room for the close button when it appears on hover. */
+  .tabbrowser-tab[nt-collapsed]:hover .nt-count {
+    display: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Indent guide lines (TST "Indent Line" look, but quieter)
+   --------------------------------------------------------------------------- */
+@media (-moz-pref("mod.nestedtabs.show_guides")) {
+  :root[zen-sidebar-expanded="true"] .tabbrowser-tab[nt-depth]:not([nt-depth="0"], [zen-essential]) > .tab-stack {
+    position: relative;
+
+    &::before {
+      content: "";
+      position: absolute;
+      pointer-events: none;
+      inset-block: -2px;
+      inset-inline-start: calc(var(--nt-depth) * var(--nt-indent) * -1);
+      width: calc(var(--nt-depth) * var(--nt-indent));
+      background-image: repeating-linear-gradient(
+        to right,
+        transparent 0 calc(var(--nt-indent) / 2 - 0.5px),
+        var(--nt-guide-color) calc(var(--nt-indent) / 2 - 0.5px) calc(var(--nt-indent) / 2 + 0.5px),
+        transparent calc(var(--nt-indent) / 2 + 0.5px) var(--nt-indent)
+      );
+    }
+  }
+
+  :root:-moz-locale-dir(rtl)[zen-sidebar-expanded="true"] .tabbrowser-tab[nt-depth]:not([nt-depth="0"]) > .tab-stack::before {
+    background-image: repeating-linear-gradient(
+      to left,
+      transparent 0 calc(var(--nt-indent) / 2 - 0.5px),
+      var(--nt-guide-color) calc(var(--nt-indent) / 2 - 0.5px) calc(var(--nt-indent) / 2 + 0.5px),
+      transparent calc(var(--nt-indent) / 2 + 0.5px) var(--nt-indent)
+    );
+  }
+}
+
+/* Context menu items are only shown when they apply (JS toggles [hidden]). */
+#tabContextMenu .nt-menu-separator[hidden],
+#tabContextMenu [id^="nt-ctx-"][hidden] {
+  display: none;
+}
