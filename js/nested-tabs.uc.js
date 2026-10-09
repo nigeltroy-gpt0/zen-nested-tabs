@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.1
+// @version        1.0.2
 // ==/UserScript==
 
 /*
@@ -638,8 +638,8 @@
         return;
       }
 
-      const closeTree =
-        tab._ntCollapsed && Services.prefs.getStringPref(PREF_CLOSE_BEHAVIOR, "promote") === "close_collapsed";
+      const behavior = Services.prefs.getStringPref(PREF_CLOSE_BEHAVIOR, "promote");
+      const closeTree = behavior === "close_all" || (behavior === "close_collapsed" && tab._ntCollapsed);
 
       if (closeTree) {
         const descendants = this.descendantsOf(tab);

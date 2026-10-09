@@ -10,7 +10,7 @@ Tree Style Tab–style nesting for Zen's vertical tabs. Zen's tabs keep their us
 - **The sidebar grows with nesting.** The minimum sidebar width is Zen's own minimum plus 16px for each visible level. If a new level doesn't fit, the sidebar widens to the new minimum. When nesting gets shallower, the minimum drops, so you can drag the sidebar narrower again, but the mod never shrinks it for you. Zen's drag-to-resize respects the same minimum.
 - **Essentials are never nested.** Essentials, Glance previews and Zen's empty placeholder tab are left out completely.
 - **Drag and drop works like TST.** When you drop a tab, its parent comes from where it lands. Dropping it right under a parent makes it that parent's first child. Dropping it among a parent's children makes it their sibling. Its own children move with it.
-- **Closing a parent.** By default its children move up one level. You can choose instead to close the whole tree when the parent is collapsed.
+- **Closing a parent.** Choose one of: *Close the whole tree*, *Close the whole tree, only if collapsed*, or *Move children up one level* (the default).
 - **Tab context menu.** *Nest Under Tab Above*, *Move Out One Level*, *Collapse/Expand Tree*, *Collapse All Trees*, *Expand All Trees*.
 - **The tree is saved with your session**, using SessionStore's custom tab values, so it survives restarts.
 
@@ -53,7 +53,7 @@ Zen Mods from the official store are CSS only. CSS can indent and hide tabs, but
 | `mod.nestedtabs.auto_nest` | `true` | Nest tabs opened from links |
 | `mod.nestedtabs.show_guides` | `true` | Faint vertical guide lines for each level |
 | `mod.nestedtabs.show_count` | `true` | Hidden-tab count on collapsed parents |
-| `mod.nestedtabs.close_behavior` | `promote` | `promote` or `close_collapsed` |
+| `mod.nestedtabs.close_behavior` | `promote` | `close_all`, `close_collapsed` or `promote` |
 
 ## Debugging
 

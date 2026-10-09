@@ -24,8 +24,9 @@
     "placeholder": "Select behavior",
     "defaultValue": "promote",
     "options": [
-      { "label": "Move its children up one level", "value": "promote" },
-      { "label": "Close the whole tree if it is collapsed", "value": "close_collapsed" }
+      { "label": "Close the whole tree", "value": "close_all" },
+      { "label": "Close the whole tree, only if collapsed", "value": "close_collapsed" },
+      { "label": "Move children up one level", "value": "promote" }
     ]
   }
 ]
