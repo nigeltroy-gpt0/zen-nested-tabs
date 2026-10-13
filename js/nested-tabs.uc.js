@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.3
+// @version        1.0.4
 // ==/UserScript==
 
 /*
@@ -394,6 +394,9 @@
           this.#clearTab(tab);
           continue;
         }
+        if (tab._ntPending) {
+          continue; // not placed yet, see #onTabOpen
+        }
         if (!tab._ntPersisted) {
           this.#save(tab);
         }
@@ -653,24 +656,31 @@
 
       // Only real "opened from this page" relations. `tab.owner` is also set
       // for Ctrl+T, which TST does not nest either.
-      const opener = tab.openerTab;
-      if (!opener || !Services.prefs.getBoolPref(PREF_AUTO_NEST, true)) {
-        this.scheduleNormalize();
-        return;
-      }
+      const opener = Services.prefs.getBoolPref(PREF_AUTO_NEST, true) ? tab.openerTab : null;
+
+      // Until it is placed, a new tab may sit between a parent and its
+      // children (Firefox/Zen often insert related tabs right after the
+      // opener). Mark it pending so #normalize() looks through it instead of
+      // treating it as a break in the tree and detaching those children.
+      tab._ntPending = true;
 
       // Zen places the tab into its space/section after TabOpen; wait for that.
       setTimeout(() => {
-        if (
-          this.isEligible(tab) &&
-          this.isEligible(opener) &&
-          !tab.pinned &&
-          !tab._ntParentId &&
-          tab.parentNode === opener.parentNode
-        ) {
+        tab._ntPending = false;
+        if (!this.isEligible(tab)) {
+          this.scheduleNormalize();
+          return;
+        }
+        if (tab._ntParentId) {
+          // Restored or duplicated tab: SessionStore already gave it a parent.
+          this.normalize();
+        } else if (opener && this.isEligible(opener) && !tab.pinned && tab.parentNode === opener.parentNode) {
           this.nestUnder(tab, opener);
         } else {
-          this.scheduleNormalize();
+          // Not auto-nested: take the parent implied by where it was inserted,
+          // so a tab dropped into the middle of a tree never splits it.
+          this.setParent(tab, this.#parentFromPosition(tab));
+          this.normalize();
         }
       }, 0);
     }
@@ -722,7 +732,7 @@
      * follows it.
      */
     #onTabMove(tab) {
-      if (this.#internalMoves || !this.#initialized || !this.isEligible(tab)) {
+      if (this.#internalMoves || !this.#initialized || !this.isEligible(tab) || tab._ntPending) {
         return;
       }
 
@@ -735,7 +745,24 @@
         }
       }
 
-      const list = this.#siblingsInContainer(tab).filter(t => !subtree.has(t));
+      const newParent = this.#parentFromPosition(tab, subtree, map);
+      this.setParent(tab, newParent);
+      if (newParent) {
+        this.#expandAncestors(tab);
+      }
+
+      const ordered = gBrowser.tabs.filter(t => subtree.has(t));
+      this.#bringDescendants(tab, ordered);
+      this.scheduleNormalize();
+    }
+
+    /**
+     * The parent implied by `tab`'s current position: it joins the level of
+     * the tab just below it (TST's drop rule). `exclude` holds tabs to look
+     * through, e.g. the moved tab's own subtree.
+     */
+    #parentFromPosition(tab, exclude = new Set(), map = this.#idMap()) {
+      const list = this.#siblingsInContainer(tab).filter(t => t === tab || (!exclude.has(t) && !t._ntPending));
       const index = list.indexOf(tab);
       const next = list[index + 1] || null;
       const prev = list[index - 1] || null;
@@ -751,15 +778,7 @@
       if (newParent && prev && newParent !== prev && !this.#isAncestor(newParent, prev, map)) {
         newParent = null;
       }
-
-      this.setParent(tab, newParent);
-      if (newParent) {
-        this.#expandAncestors(tab);
-      }
-
-      const ordered = gBrowser.tabs.filter(t => subtree.has(t));
-      this.#bringDescendants(tab, ordered);
-      this.scheduleNormalize();
+      return newParent;
     }
 
     // -- Context menu -------------------------------------------------------------
