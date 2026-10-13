@@ -4,10 +4,10 @@
   "description": "Tree Style Tab-like nesting for Zen's vertical tabs, with collapsible carets.",
   "homepage": "https://github.com/nigeltroy-gpt0/zen-nested-tabs",
   "author": "nigel",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "tags": ["tabs", "tree", "sidebar"],
   "createdAt": "2026-10-09",
-  "updatedAt": "2026-10-09",
+  "updatedAt": "2026-10-12",
   "style": {
     "chrome": "chrome.css"
   },

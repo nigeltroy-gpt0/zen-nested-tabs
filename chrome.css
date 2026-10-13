@@ -12,7 +12,7 @@
  */
 
 :root {
-  --nt-indent: 16px;
+  --nt-indent: 16px; /* fallback; the script sets this from mod.nestedtabs.indent */
   --nt-guide-color: color-mix(in srgb, currentColor 14%, transparent);
   --nt-twisty-size: 16px;
 }

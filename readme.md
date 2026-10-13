@@ -5,9 +5,9 @@ Tree Style Tab–style nesting for Zen's vertical tabs. Zen's tabs keep their us
 ## What it does
 
 - **Automatic nesting.** A tab opened from a link (middle-click, `target=_blank`, `window.open`) becomes a child of the tab that opened it and goes to the end of that tab's children. New tabs from Ctrl/Cmd+T, bookmarks and the URL bar stay at the top level. You can turn this off in the mod's preferences.
-- **16px per level.** Each level is indented 16px. Inside a Zen folder, the indent is added on top of the folder's own indent.
+- **16px per level by default.** Each level is indented 16px; change it with the *Indent per nesting level* setting (4–64px). Changes apply immediately. Inside a Zen folder, the indent is added on top of the folder's own indent.
 - **Carets.** Every tab that has children shows a caret before its favicon. Click it to collapse or expand that tree. Ctrl/Cmd-click collapses or expands every level below it. A collapsed parent shows how many tabs it is hiding (you can turn this off).
-- **The sidebar grows with nesting.** The minimum sidebar width is Zen's own minimum plus 16px for each visible level. If a new level doesn't fit, the sidebar widens to the new minimum. When nesting gets shallower, the minimum drops, so you can drag the sidebar narrower again, but the mod never shrinks it for you. Zen's drag-to-resize respects the same minimum.
+- **The sidebar grows with nesting.** The minimum sidebar width is Zen's own minimum plus one indent (16px by default) for each visible level. If a new level doesn't fit, the sidebar widens to the new minimum. When nesting gets shallower, the minimum drops, so you can drag the sidebar narrower again, but the mod never shrinks it for you. Zen's drag-to-resize respects the same minimum.
 - **Essentials are never nested.** Essentials, Glance previews and Zen's empty placeholder tab are left out completely.
 - **Drag and drop works like TST.** When you drop a tab, its parent comes from where it lands. Dropping it right under a parent makes it that parent's first child. Dropping it among a parent's children makes it their sibling. Its own children move with it.
 - **Closing a parent.** Choose one of: *Close the whole tree*, *Close the whole tree, only if collapsed*, or *Move children up one level* (the default).
@@ -51,6 +51,7 @@ Zen Mods from the official store are CSS only. CSS can indent and hide tabs, but
 | Pref | Default | |
 | --- | --- | --- |
 | `mod.nestedtabs.auto_nest` | `true` | Nest tabs opened from links |
+| `mod.nestedtabs.indent` | `16` | Indent per nesting level in px (4–64); also sets how much the sidebar's minimum width grows per level |
 | `mod.nestedtabs.show_guides` | `true` | Faint vertical guide lines for each level |
 | `mod.nestedtabs.show_count` | `true` | Hidden-tab count on collapsed parents |
 | `mod.nestedtabs.close_behavior` | `promote` | `close_all`, `close_collapsed` or `promote` |

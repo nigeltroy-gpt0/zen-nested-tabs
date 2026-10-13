@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.2
+// @version        1.0.3
 // ==/UserScript==
 
 /*
@@ -30,10 +30,36 @@
     return;
   }
 
-  const INDENT_PX = 16;
+  const DEFAULT_INDENT_PX = 16;
+  const MIN_INDENT_PX = 4;
+  const MAX_INDENT_PX = 64;
 
   const PREF_AUTO_NEST = "mod.nestedtabs.auto_nest";
   const PREF_CLOSE_BEHAVIOR = "mod.nestedtabs.close_behavior";
+  const PREF_INDENT = "mod.nestedtabs.indent";
+
+  /**
+   * Indent per level in px. Mod managers may store this text setting as a
+   * string ("16", "16px") or, when it looks numeric, as an integer pref.
+   */
+  const readIndent = () => {
+    let raw;
+    try {
+      switch (Services.prefs.getPrefType(PREF_INDENT)) {
+        case Services.prefs.PREF_INT:
+          raw = Services.prefs.getIntPref(PREF_INDENT);
+          break;
+        case Services.prefs.PREF_STRING:
+          raw = Services.prefs.getStringPref(PREF_INDENT);
+          break;
+      }
+    } catch (e) {}
+    const px = parseFloat(raw);
+    if (!Number.isFinite(px)) {
+      return DEFAULT_INDENT_PX;
+    }
+    return Math.min(MAX_INDENT_PX, Math.max(MIN_INDENT_PX, Math.round(px)));
+  };
 
   const KEY_ID = "zenNestedTabsId";
   const KEY_PARENT = "zenNestedTabsParent";
@@ -67,6 +93,7 @@
     #internalMoves = 0;
     #initialized = false;
     #normalizeQueued = false;
+    #indentPx = DEFAULT_INDENT_PX;
 
     async init() {
       // Mod managers don't reliably apply preferences.json defaults, and the
@@ -85,6 +112,7 @@
         this.#loadFromSession(tab);
       }
 
+      this.#applyIndent();
       this.#patchSidebarMinWidth();
       this.#addListeners();
       this.#addContextMenu();
@@ -488,7 +516,7 @@
     }
 
     #updateSidebarWidth(maxDepth) {
-      const extra = maxDepth * INDENT_PX;
+      const extra = maxDepth * this.#indentPx;
       const manager = window.gZenVerticalTabsManager;
       const toolbox = window.gNavToolbox;
       if (!manager || !toolbox) {
@@ -528,7 +556,23 @@
 
     // -- Events -----------------------------------------------------------------
 
+    /** Publish the indent for chrome.css; the width math uses #indentPx. */
+    #applyIndent() {
+      this.#indentPx = readIndent();
+      document.documentElement.style.setProperty("--nt-indent", `${this.#indentPx}px`);
+    }
+
     #addListeners() {
+      // Live-update when the setting changes; no restart needed.
+      const indentObserver = () => {
+        this.#applyIndent();
+        this.normalize();
+      };
+      Services.prefs.addObserver(PREF_INDENT, indentObserver);
+      window.addEventListener("unload", () => Services.prefs.removeObserver(PREF_INDENT, indentObserver), {
+        once: true,
+      });
+
       const container = gBrowser.tabContainer;
       container.addEventListener("TabOpen", this);
       container.addEventListener("TabClose", this);
