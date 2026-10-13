@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.4
+// @version        1.0.5
 // ==/UserScript==
 
 /*
@@ -94,6 +94,9 @@
     #initialized = false;
     #normalizeQueued = false;
     #indentPx = DEFAULT_INDENT_PX;
+    /** Active tab drag: { tab, subtree, startX, x, clientY, moved, dropped }. */
+    #drag = null;
+    #dropIndicatorQueued = false;
 
     async init() {
       // Mod managers don't reliably apply preferences.json defaults, and the
@@ -592,6 +595,12 @@
         container.addEventListener(type, this, true);
       }
 
+      // Drag right/left to nest/un-nest. Zen's own drag & drop still does the
+      // reordering; we only read the pointer to decide the new level.
+      for (const type of ["dragover", "drop", "dragend"]) {
+        window.addEventListener(type, this, true);
+      }
+
       window.addEventListener("ZenWorkspacesUIUpdate", this);
       window.addEventListener("ZenWorkspaceDataChanged", this);
 
@@ -609,8 +618,20 @@
         case "click":
         case "auxclick":
         case "dblclick":
+          this.#onTwistyEvent(event);
+          break;
         case "dragstart":
           this.#onTwistyEvent(event);
+          if (!event.defaultPrevented) {
+            this.#onDragStart(event);
+          }
+          break;
+        case "dragover":
+        case "drop":
+          this.#onDragOver(event);
+          break;
+        case "dragend":
+          this.#onDragEnd();
           break;
         case "TabOpen":
           this.#onTabOpen(event.target);
@@ -745,7 +766,14 @@
         }
       }
 
-      const newParent = this.#parentFromPosition(tab, subtree, map);
+      const drag = this.#drag?.tab === tab ? this.#drag : null;
+      if (drag) {
+        drag.moved = true;
+      }
+      const { prev, next } = this.#neighbors(tab, subtree);
+      const newParent = drag
+        ? this.#dropParent(prev, next, drag.x - drag.startX, map)
+        : this.#positionalParent(prev, next, map);
       this.setParent(tab, newParent);
       if (newParent) {
         this.#expandAncestors(tab);
@@ -756,29 +784,186 @@
       this.scheduleNormalize();
     }
 
-    /**
-     * The parent implied by `tab`'s current position: it joins the level of
-     * the tab just below it (TST's drop rule). `exclude` holds tabs to look
-     * through, e.g. the moved tab's own subtree.
-     */
-    #parentFromPosition(tab, exclude = new Set(), map = this.#idMap()) {
+    /** Previous/next eligible tabs around `tab` in its container, skipping `exclude`. */
+    #neighbors(tab, exclude = new Set()) {
       const list = this.#siblingsInContainer(tab).filter(t => t === tab || (!exclude.has(t) && !t._ntPending));
       const index = list.indexOf(tab);
-      const next = list[index + 1] || null;
-      const prev = list[index - 1] || null;
+      return { prev: list[index - 1] || null, next: list[index + 1] || null };
+    }
 
-      let newParent = null;
-      if (next && next._ntParentId) {
-        // Landing above a nested tab means joining that tab's level.
-        const nextParent = this.parentOf(next, map);
-        if (nextParent && nextParent !== tab && list.indexOf(nextParent) < index) {
-          newParent = nextParent;
+    /** The parent implied by `tab`'s current position (see #positionalParent). */
+    #parentFromPosition(tab, exclude = new Set(), map = this.#idMap()) {
+      const { prev, next } = this.#neighbors(tab, exclude);
+      return this.#positionalParent(prev, next, map);
+    }
+
+    /**
+     * TST's drop rule: a tab placed between `prev` and `next` joins the level
+     * of `next` when `next` is nested under `prev` or one of its ancestors;
+     * otherwise it is top-level.
+     */
+    #positionalParent(prev, next, map) {
+      if (!prev || !next?._ntParentId) {
+        return null;
+      }
+      const nextParent = this.parentOf(next, map);
+      if (!nextParent || (nextParent !== prev && !this.#isAncestor(nextParent, prev, map))) {
+        return null;
+      }
+      return nextParent;
+    }
+
+    #depthOf(tab, map) {
+      let depth = 0;
+      for (let p = this.parentOf(tab, map); p && depth < 1000; p = this.parentOf(p, map)) {
+        depth++;
+      }
+      return depth;
+    }
+
+    /**
+     * Parent for a tab placed between `prev` and `next` at the requested
+     * depth. The depth is clamped so the tree stays valid: at most one level
+     * deeper than `prev` (its child), and at least `next`'s depth (so `next`
+     * keeps its parent).
+     */
+    #parentForDepth(prev, next, wanted, map) {
+      if (!prev) {
+        return null;
+      }
+      const prevDepth = this.#depthOf(prev, map);
+      const minDepth = next ? this.#depthOf(next, map) : 0;
+      const depth = Math.max(minDepth, Math.min(prevDepth + 1, wanted));
+      let parent = prev;
+      for (let d = prevDepth; parent && d > depth - 1; d--) {
+        parent = this.parentOf(parent, map);
+      }
+      return depth === 0 ? null : parent;
+    }
+
+    /**
+     * Drag gesture: start from the normal drop rule, then go one level deeper
+     * per step dragged right, or shallower per step dragged left. A step is
+     * one indent (at least 24px, so normal vertical drags don't nest by
+     * accident) and needs 60% of a step to count.
+     */
+    #dropParent(prev, next, dx, map) {
+      const base = this.#positionalParent(prev, next, map);
+      const baseDepth = base ? this.#depthOf(base, map) + 1 : 0;
+      const step = Math.max(this.#indentPx, 24);
+      const raw = dx / step;
+      const steps = raw >= 0 ? Math.floor(raw + 0.4) : -Math.floor(-raw + 0.4);
+      return this.#parentForDepth(prev, next, baseDepth + steps, map);
+    }
+
+    // -- Drag to nest -----------------------------------------------------------
+
+    #onDragStart(event) {
+      this.#clearDropIndicator();
+      this.#drag = null;
+      const tab = event.target.closest?.(".tabbrowser-tab");
+      if (
+        !tab ||
+        !this.isEligible(tab) ||
+        window.gNavToolbox.getAttribute("zen-sidebar-expanded") !== "true" ||
+        (tab.multiselected && gBrowser.selectedTabs.length > 1)
+      ) {
+        return; // multi-tab drags keep the plain drop rule
+      }
+      const map = this.#idMap();
+      const subtree = new Set(gBrowser.tabs.filter(t => t !== tab && this.#isAncestor(tab, t, map)));
+      this.#drag = {
+        tab,
+        subtree,
+        startX: event.screenX,
+        x: event.screenX,
+        clientY: event.clientY,
+        moved: false,
+        dropped: false,
+      };
+    }
+
+    #onDragOver(event) {
+      const drag = this.#drag;
+      if (!drag) {
+        return;
+      }
+      // Some platforms report 0,0 for synthetic drag events; ignore those.
+      if (event.screenX || event.screenY) {
+        drag.x = event.screenX;
+        drag.clientY = event.clientY;
+        drag.overTabs = !!event.target.closest?.("#tabbrowser-tabs, .zen-workspace-tabs-section");
+      }
+      if (event.type === "drop") {
+        drag.dropped = true;
+        this.#clearDropIndicator();
+        return;
+      }
+      if (!this.#dropIndicatorQueued) {
+        this.#dropIndicatorQueued = true;
+        requestAnimationFrame(() => {
+          this.#dropIndicatorQueued = false;
+          this.#updateDropIndicator();
+        });
+      }
+    }
+
+    #onDragEnd() {
+      const drag = this.#drag;
+      this.#clearDropIndicator();
+      if (!drag) {
+        return;
+      }
+      // Firefox fires no TabMove when a tab is dropped where it already was,
+      // which is exactly the "drag right to indent in place" case.
+      setTimeout(() => {
+        if (this.#drag === drag) {
+          if (drag.dropped && !drag.moved && drag.tab.isConnected) {
+            this.#onTabMove(drag.tab);
+          }
+          this.#drag = null;
+        }
+      }, 50);
+    }
+
+    /** Outline the tab that would become the parent if dropped now. */
+    #updateDropIndicator() {
+      this.#clearDropIndicator();
+      const drag = this.#drag;
+      if (!drag || drag.dropped || !drag.overTabs) {
+        return;
+      }
+      const list = this.#siblingsInContainer(drag.tab).filter(
+        t => t !== drag.tab && !drag.subtree.has(t) && !t._ntPending && !t.hasAttribute("nt-hidden")
+      );
+      let prev = null;
+      let next = null;
+      for (const t of list) {
+        const rect = t.getBoundingClientRect();
+        if (!rect.height) {
+          continue;
+        }
+        if (rect.top + rect.height / 2 < drag.clientY) {
+          prev = t;
+        } else {
+          next = t;
+          break;
         }
       }
-      if (newParent && prev && newParent !== prev && !this.#isAncestor(newParent, prev, map)) {
-        newParent = null;
+      const parent = this.#dropParent(prev, next, drag.x - drag.startX, this.#idMap());
+      if (parent) {
+        parent.setAttribute("nt-drop-parent", "");
+        drag.indicated = parent;
       }
-      return newParent;
+    }
+
+    #clearDropIndicator() {
+      for (const t of document.querySelectorAll(".tabbrowser-tab[nt-drop-parent]")) {
+        t.removeAttribute("nt-drop-parent");
+      }
+      if (this.#drag) {
+        this.#drag.indicated = null;
+      }
     }
 
     // -- Context menu -------------------------------------------------------------

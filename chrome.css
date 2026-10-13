@@ -161,6 +161,14 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Drag to nest: outline the tab that will become the parent on drop
+   --------------------------------------------------------------------------- */
+.tabbrowser-tab[nt-drop-parent] > .tab-stack > .tab-background {
+  outline: 1.5px dashed color-mix(in srgb, var(--zen-primary-color, AccentColor) 80%, transparent) !important;
+  outline-offset: -1.5px;
+}
+
 /* Context menu items are only shown when they apply (JS toggles [hidden]). */
 #tabContextMenu .nt-menu-separator[hidden],
 #tabContextMenu [id^="nt-ctx-"][hidden] {
