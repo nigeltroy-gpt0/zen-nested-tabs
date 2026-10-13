@@ -7,7 +7,7 @@
   "version": "1.0.5",
   "tags": ["tabs", "tree", "sidebar"],
   "createdAt": "2026-10-09",
-  "updatedAt": "2026-10-13",
+  "updatedAt": "2026-10-13T21:10:53Z",
   "style": {
     "chrome": "chrome.css"
   },
