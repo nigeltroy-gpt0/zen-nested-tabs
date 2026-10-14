@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.9
+// @version        1.0.10
 // ==/UserScript==
 
 /*
@@ -114,7 +114,7 @@
     #normalizeQueued = false;
     #indentPx = DEFAULT_INDENT_PX;
     #caretPosition = "edge";
-    /** Active tab drag: { tab, subtree, startX, x, clientY, moved, dropped }. */
+    /** Active tab drag: { tab, subtree, clientX, clientY, grabOffset, delta, moved, dropped }. */
     #drag = null;
     #dropIndicatorQueued = false;
     #dropOverlay = null;
@@ -971,31 +971,45 @@
     }
 
     /**
-     * Drag gesture: start from the normal drop rule (the level of the tab
-     * below), then one level deeper per step dragged right, shallower per step
-     * left. A step is one indent, at least 24px. To keep it from flickering,
-     * a new level needs 60% of a step from the base, and once chosen it only
-     * changes after moving another 60% of a step away from it.
+     * Drag gesture, judged from where the dragged tab's left edge would be
+     * (pointer position minus where the tab was grabbed), relative to the tab
+     * above the drop point (`prev`):
+     *   - past prev's indent + max(half an indent, 12px) -> its child (+1)
+     *   - otherwise, near prev's indent                   -> its sibling (0)
+     *   - more than half an indent left of prev's indent  -> step out to the
+     *     nearest shallower level (-1, -2, ...)
+     * The child/sibling switch point moves 4px once chosen, so it doesn't
+     * flicker. Returns the depth relative to prev, clamped to what keeps the
+     * tree valid (the tab below must keep its parent).
      */
-    #dragDepth(drag, prev, next, map) {
-      const base = this.#positionalParent(prev, next, map);
-      const baseDepth = base ? this.#depthOf(base, map) + 1 : 0;
+    #dragDelta(drag, prev, next, map) {
+      if (!prev) {
+        return 0; // top of the list: top level
+      }
+      const prevDepth = this.#depthOf(prev, map);
       const { min, max } = this.#depthRange(prev, next, map);
-      const step = Math.max(this.#indentPx, 24);
-      const target = baseDepth + (drag.x - drag.startX) / step; // continuous
-      const key = `${prev?._ntId}|${next?._ntId}`;
+      const indent = this.#indentPx;
+      const prevLeft = prev.getBoundingClientRect().left;
+      const edge = drag.clientX - drag.grabOffset;
+      const key = `${prev._ntId}|${next?._ntId}`;
 
+      let childAt = prevLeft + Math.max(indent / 2, 12);
+      if (drag.deltaKey === key) {
+        childAt += drag.delta === 1 ? -4 : 4; // hysteresis
+      }
       let depth;
-      if (drag.depthKey === key && drag.depth != null && Math.abs(target - drag.depth) < 0.6) {
-        depth = drag.depth; // hysteresis: stay put
+      if (edge >= childAt) {
+        depth = prevDepth + 1;
+      } else if (edge >= prevLeft - indent / 2) {
+        depth = prevDepth;
       } else {
-        const offset = target - baseDepth;
-        depth = baseDepth + (offset >= 0 ? Math.floor(offset + 0.4) : -Math.floor(-offset + 0.4));
+        depth = Math.round((edge - (prevLeft - prevDepth * indent)) / indent);
+        depth = Math.min(prevDepth - 1, depth);
       }
       depth = Math.max(min, Math.min(max, depth));
-      drag.depth = depth;
-      drag.depthKey = key;
-      return depth;
+      drag.delta = depth - prevDepth;
+      drag.deltaKey = key;
+      return drag.delta;
     }
 
     /** The parent at `depth` for a tab placed between `prev` and `next`. */
@@ -1013,12 +1027,14 @@
     }
 
     /**
-     * Parent for the dropped tab. Uses the level the indicator was showing,
-     * so what you saw is what you get; it is only re-clamped if the tab landed
-     * between different neighbours than predicted.
+     * Parent for the dropped tab: the level the indicator was showing,
+     * relative to the tab above, so what you saw is what you get.
      */
     #dropParentFor(drag, prev, next, map) {
-      const depth = drag.depth ?? this.#dragDepth(drag, prev, next, map);
+      // Apply the indicated level to the tab that actually ended up above it;
+      // #parentAtDepth re-clamps against the real neighbours.
+      const delta = drag.delta ?? this.#dragDelta(drag, prev, next, map);
+      const depth = prev ? this.#depthOf(prev, map) + delta : 0;
       return this.#parentAtDepth(prev, next, depth, map);
     }
 
@@ -1041,13 +1057,14 @@
       this.#drag = {
         tab,
         subtree,
-        startX: event.screenX,
-        x: event.screenX,
+        clientX: event.clientX,
         clientY: event.clientY,
+        // Where on the tab it was grabbed, so we know where its left edge is.
+        grabOffset: event.clientX - tab.getBoundingClientRect().left,
         moved: false,
         dropped: false,
-        depth: null,
-        depthKey: null,
+        delta: null,
+        deltaKey: null,
       };
     }
 
@@ -1058,7 +1075,7 @@
       }
       // Some platforms report 0,0 for synthetic drag events; ignore those.
       if (event.screenX || event.screenY) {
-        drag.x = event.screenX;
+        drag.clientX = event.clientX;
         drag.clientY = event.clientY;
         drag.overTabs = !!event.target.closest?.("#tabbrowser-tabs, .zen-workspace-tabs-section");
       }
@@ -1128,7 +1145,8 @@
         }
       }
       const map = this.#idMap();
-      const depth = this.#dragDepth(drag, prev, next, map);
+      const delta = this.#dragDelta(drag, prev, next, map);
+      const depth = prev ? this.#depthOf(prev, map) + delta : 0;
       const parent = this.#parentAtDepth(prev, next, depth, map);
 
       if (parent) {
@@ -1145,8 +1163,11 @@
         return;
       }
       const { line, label } = this.#ensureDropOverlay();
-      const rootLeft = anchor.left - this.#depthOf(anchorTab, map) * this.#indentPx;
-      const left = rootLeft + depth * this.#indentPx;
+      // Starts at the tab above's indent (sibling), one indent further in
+      // (child), or further out when stepping out levels.
+      const left = prevRect
+        ? prevRect.left + delta * this.#indentPx
+        : anchor.left - this.#depthOf(anchorTab, map) * this.#indentPx;
       const right = anchor.right;
       let top;
       if (prevRect && nextRect) {
