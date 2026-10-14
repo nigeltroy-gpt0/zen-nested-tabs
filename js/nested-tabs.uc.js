@@ -2,21 +2,26 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.7
+// @version        1.0.8
 // ==/UserScript==
 
 /*
  * Model
  * -----
- * The tree is stored as one parent pointer per tab (a stable id saved with
- * SessionStore custom tab values). Tab order is never stored: it is whatever
- * order the tabs are in the sidebar. `#normalize()` walks the tabs in order and
- * enforces the one invariant that matters: a tab's parent must appear above it
- * in the same container, with only that parent's descendants in between. Any
- * tab that breaks the rule becomes a root tab. Depth, carets, collapsing and
- * the minimum sidebar width are all derived from that single walk.
+ * The tab tree is the source of truth: one parent pointer per tab (a stable
+ * id saved with SessionStore custom tab values). Children are ordered by
+ * sidebar order. Only explicit tree operations change the tree: open (nest
+ * under the opener), close (promote or close the subtree), move/drag
+ * (re-parent from the drop position and bring the subtree along), nest /
+ * un-nest, and leaving a list (pinning, folders, spaces, Essentials), where
+ * the tab's children move up to its parent.
  *
- * Containers: nesting only happens between tabs that share a DOM parent (the
+ * Rendering (#normalize) only reads the tree. Depth, hidden state and child
+ * counts come from parent pointers, never from sidebar order, so a tab that
+ * is briefly out of place (closing, mid-move, just opened) can't cut anyone
+ * off.
+ *
+ * Lists: nesting only happens between tabs that share a DOM parent (the
  * normal tabs list of a space, the pinned list, or a Zen folder). Essentials,
  * Glance tabs and Zen's empty placeholder tab are never part of a tree.
  */
@@ -400,15 +405,24 @@
       });
     }
 
+    /**
+     * Render the tree. This only *reads* the tree: depth, hidden state and
+     * child counts come from parent pointers, never from sidebar order, so a
+     * tab that is momentarily out of place (closing, mid-move, just opened)
+     * can't cut anyone off. The only changes made here are for tabs that have
+     * really left their list (see #leaveList).
+     */
     normalize() {
       if (!this.#initialized) {
         return;
       }
+      this.#applyListChanges();
+
+      const map = this.#idMap();
       const activeSpace = window.gZenWorkspaces?.activeWorkspace;
+      const info = new Map(); // tab -> { depth, hidden, descendants }
       let maxVisibleDepth = 0;
 
-      // Group eligible tabs by container, keeping sidebar order.
-      const containers = new Map();
       for (const tab of gBrowser.tabs) {
         if (!this.isEligible(tab)) {
           this.#clearTab(tab);
@@ -420,54 +434,93 @@
         if (!tab._ntPersisted) {
           this.#save(tab);
         }
-        if (!containers.has(tab.parentNode)) {
-          containers.set(tab.parentNode, []);
-        }
-        containers.get(tab.parentNode).push(tab);
+        const ancestors = this.#ancestors(tab, map);
+        info.set(tab, { depth: ancestors.length, hidden: ancestors.some(a => a._ntCollapsed), ancestors, descendants: 0 });
       }
 
-      for (const tabs of containers.values()) {
-        const stack = []; // ancestors of the current position
-        const info = new Map(); // tab -> { depth, hidden, descendants }
-
-        for (const tab of tabs) {
-          let parentIndex = -1;
-          if (tab._ntParentId) {
-            parentIndex = stack.findLastIndex(t => t._ntId === tab._ntParentId);
-            if (parentIndex === -1) {
-              // Parent is gone, elsewhere, or not directly above us: detach.
-              tab._ntParentId = null;
-              this.#save(tab);
-            }
-          }
-          stack.length = parentIndex + 1;
-
-          const depth = stack.length;
-          const hidden = stack.some(t => t._ntCollapsed);
-          for (const ancestor of stack) {
-            info.get(ancestor).descendants++;
-          }
-          info.set(tab, { depth, hidden, descendants: 0 });
-          stack.push(tab);
-
-          const inActiveSpace =
-            !activeSpace || !tab.hasAttribute("zen-workspace-id") || tab.getAttribute("zen-workspace-id") === activeSpace;
-          if (!hidden && inActiveSpace && !tab.hidden) {
-            maxVisibleDepth = Math.max(maxVisibleDepth, depth);
-          }
+      for (const [tab, { depth, hidden, ancestors }] of info) {
+        for (const ancestor of ancestors) {
+          info.get(ancestor).descendants++;
         }
-
-        for (const [tab, { depth, hidden, descendants }] of info) {
-          if (!descendants && tab._ntCollapsed) {
-            tab._ntCollapsed = false;
-            this.#save(tab);
-          }
-          this.#renderTab(tab, depth, hidden, descendants);
+        const inActiveSpace =
+          !activeSpace || !tab.hasAttribute("zen-workspace-id") || tab.getAttribute("zen-workspace-id") === activeSpace;
+        if (!hidden && inActiveSpace && !tab.hidden) {
+          maxVisibleDepth = Math.max(maxVisibleDepth, depth);
         }
+      }
+
+      for (const [tab, { depth, hidden, descendants }] of info) {
+        if (!descendants && tab._ntCollapsed) {
+          tab._ntCollapsed = false;
+          this.#save(tab);
+        }
+        tab._ntList = tab.parentNode;
+        this.#renderTab(tab, depth, hidden, descendants);
       }
 
       this.#updateSidebarWidth(maxVisibleDepth);
       this.#updateGuideGap();
+    }
+
+    /**
+     * The tab's ancestors that count for display, nearest first. A parent only
+     * counts while it is a live, placed tree tab in the same list; otherwise
+     * the chain stops there (without changing the stored tree).
+     */
+    #ancestors(tab, map) {
+      const result = [];
+      let current = tab;
+      while (result.length < 1000) {
+        const parent = this.parentOf(current, map);
+        if (
+          !parent ||
+          parent === tab ||
+          !this.isEligible(parent) ||
+          parent._ntPending ||
+          parent.parentNode !== tab.parentNode
+        ) {
+          break;
+        }
+        result.push(parent);
+        current = parent;
+      }
+      return result;
+    }
+
+    /**
+     * Tree operation: take `tab` out of its tree. Its children move up to its
+     * parent (they stay where they are, so the tree stays contiguous) and the
+     * tab itself becomes top-level.
+     */
+    #leaveTree(tab) {
+      const grandparent = this.parentOf(tab);
+      for (const child of gBrowser.tabs.filter(t => t !== tab && t._ntParentId === tab._ntId)) {
+        this.setParent(child, grandparent);
+      }
+      this.setParent(tab, null);
+    }
+
+    /**
+     * Tabs that really left their list since the last render: moved into a
+     * folder, the pinned list, another space, or became an Essential / Glance.
+     * Closing tabs are handled by #onTabClose instead.
+     */
+    #applyListChanges() {
+      for (const tab of gBrowser.tabs) {
+        if (tab.closing || tab._ntPending) {
+          continue;
+        }
+        const leftList = tab._ntList && tab._ntList !== tab.parentNode;
+        const leftTrees = !this.isEligible(tab) && (tab._ntParentId || gBrowser.tabs.some(t => t._ntParentId === tab._ntId));
+        if (leftList || leftTrees) {
+          this.#leaveTree(tab);
+          tab._ntList = tab.parentNode;
+          if (leftList && this.isEligible(tab)) {
+            // Join whatever tree it landed in, like a drop.
+            this.setParent(tab, this.#parentFromPosition(tab));
+          }
+        }
+      }
     }
 
     #renderTab(tab, depth, hidden, descendants) {
@@ -825,6 +878,16 @@
      */
     #onTabMove(tab) {
       if (this.#internalMoves || !this.#initialized || !this.isEligible(tab) || tab._ntPending) {
+        return;
+      }
+
+      if (tab._ntList && tab._ntList !== tab.parentNode) {
+        // Moved to another list (folder, pinned, space): its children stay
+        // behind under its old parent, and it joins the tree where it landed.
+        this.#leaveTree(tab);
+        tab._ntList = tab.parentNode;
+        this.setParent(tab, this.#parentFromPosition(tab));
+        this.scheduleNormalize();
         return;
       }
 
