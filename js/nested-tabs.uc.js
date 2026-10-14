@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.8
+// @version        1.0.9
 // ==/UserScript==
 
 /*
@@ -117,6 +117,7 @@
     /** Active tab drag: { tab, subtree, startX, x, clientY, moved, dropped }. */
     #drag = null;
     #dropIndicatorQueued = false;
+    #dropOverlay = null;
 
     async init() {
       // Mod managers don't reliably apply preferences.json defaults, and the
@@ -527,6 +528,9 @@
       tab._ntDepth = depth;
       if (tab.getAttribute("nt-depth") !== String(depth)) {
         tab.setAttribute("nt-depth", depth);
+      }
+      // Compare the style too: a drag preview may have changed it.
+      if (tab.style.getPropertyValue("--nt-depth") !== String(depth)) {
         tab.style.setProperty("--nt-depth", depth);
       }
       tab.toggleAttribute("nt-hidden", hidden);
@@ -906,7 +910,7 @@
       }
       const { prev, next } = this.#neighbors(tab, subtree);
       const newParent = drag
-        ? this.#dropParent(prev, next, drag.x - drag.startX, map)
+        ? this.#dropParentFor(drag, prev, next, map)
         : this.#positionalParent(prev, next, map);
       this.setParent(tab, newParent);
       if (newParent) {
@@ -955,39 +959,67 @@
       return depth;
     }
 
-    /**
-     * Parent for a tab placed between `prev` and `next` at the requested
-     * depth. The depth is clamped so the tree stays valid: at most one level
-     * deeper than `prev` (its child), and at least `next`'s depth (so `next`
-     * keeps its parent).
-     */
-    #parentForDepth(prev, next, wanted, map) {
+    /** Valid depth range for a tab placed between `prev` and `next`. */
+    #depthRange(prev, next, map) {
       if (!prev) {
-        return null;
+        return { min: 0, max: 0 };
       }
-      const prevDepth = this.#depthOf(prev, map);
-      const minDepth = next ? this.#depthOf(next, map) : 0;
-      const depth = Math.max(minDepth, Math.min(prevDepth + 1, wanted));
-      let parent = prev;
-      for (let d = prevDepth; parent && d > depth - 1; d--) {
-        parent = this.parentOf(parent, map);
-      }
-      return depth === 0 ? null : parent;
+      // At most a child of `prev`; at least `next`'s depth so `next` keeps its parent.
+      const max = this.#depthOf(prev, map) + 1;
+      const min = Math.min(max, next ? this.#depthOf(next, map) : 0);
+      return { min, max };
     }
 
     /**
-     * Drag gesture: start from the normal drop rule, then go one level deeper
-     * per step dragged right, or shallower per step dragged left. A step is
-     * one indent (at least 24px, so normal vertical drags don't nest by
-     * accident) and needs 60% of a step to count.
+     * Drag gesture: start from the normal drop rule (the level of the tab
+     * below), then one level deeper per step dragged right, shallower per step
+     * left. A step is one indent, at least 24px. To keep it from flickering,
+     * a new level needs 60% of a step from the base, and once chosen it only
+     * changes after moving another 60% of a step away from it.
      */
-    #dropParent(prev, next, dx, map) {
+    #dragDepth(drag, prev, next, map) {
       const base = this.#positionalParent(prev, next, map);
       const baseDepth = base ? this.#depthOf(base, map) + 1 : 0;
+      const { min, max } = this.#depthRange(prev, next, map);
       const step = Math.max(this.#indentPx, 24);
-      const raw = dx / step;
-      const steps = raw >= 0 ? Math.floor(raw + 0.4) : -Math.floor(-raw + 0.4);
-      return this.#parentForDepth(prev, next, baseDepth + steps, map);
+      const target = baseDepth + (drag.x - drag.startX) / step; // continuous
+      const key = `${prev?._ntId}|${next?._ntId}`;
+
+      let depth;
+      if (drag.depthKey === key && drag.depth != null && Math.abs(target - drag.depth) < 0.6) {
+        depth = drag.depth; // hysteresis: stay put
+      } else {
+        const offset = target - baseDepth;
+        depth = baseDepth + (offset >= 0 ? Math.floor(offset + 0.4) : -Math.floor(-offset + 0.4));
+      }
+      depth = Math.max(min, Math.min(max, depth));
+      drag.depth = depth;
+      drag.depthKey = key;
+      return depth;
+    }
+
+    /** The parent at `depth` for a tab placed between `prev` and `next`. */
+    #parentAtDepth(prev, next, depth, map) {
+      const { min, max } = this.#depthRange(prev, next, map);
+      depth = Math.max(min, Math.min(max, depth));
+      if (!prev || depth === 0) {
+        return null;
+      }
+      let parent = prev;
+      for (let d = this.#depthOf(prev, map); parent && d > depth - 1; d--) {
+        parent = this.parentOf(parent, map);
+      }
+      return parent;
+    }
+
+    /**
+     * Parent for the dropped tab. Uses the level the indicator was showing,
+     * so what you saw is what you get; it is only re-clamped if the tab landed
+     * between different neighbours than predicted.
+     */
+    #dropParentFor(drag, prev, next, map) {
+      const depth = drag.depth ?? this.#dragDepth(drag, prev, next, map);
+      return this.#parentAtDepth(prev, next, depth, map);
     }
 
     // -- Drag to nest -----------------------------------------------------------
@@ -1014,6 +1046,8 @@
         clientY: event.clientY,
         moved: false,
         dropped: false,
+        depth: null,
+        depthKey: null,
       };
     }
 
@@ -1056,11 +1090,16 @@
             this.#onTabMove(drag.tab);
           }
           this.#drag = null;
+          this.scheduleNormalize(); // drop the live depth preview if cancelled
         }
       }, 50);
     }
 
-    /** Outline the tab that would become the parent if dropped now. */
+    /**
+     * Show where the tab will land: a line at the insertion point, starting at
+     * the indent it will get, a label ("Inside …" / "Top level"), an outline on
+     * the future parent, and the dragged tab itself previewed at that depth.
+     */
     #updateDropIndicator() {
       this.#clearDropIndicator();
       const drag = this.#drag;
@@ -1072,6 +1111,8 @@
       );
       let prev = null;
       let next = null;
+      let prevRect = null;
+      let nextRect = null;
       for (const t of list) {
         const rect = t.getBoundingClientRect();
         if (!rect.height) {
@@ -1079,24 +1120,79 @@
         }
         if (rect.top + rect.height / 2 < drag.clientY) {
           prev = t;
+          prevRect = rect;
         } else {
           next = t;
+          nextRect = rect;
           break;
         }
       }
-      const parent = this.#dropParent(prev, next, drag.x - drag.startX, this.#idMap());
+      const map = this.#idMap();
+      const depth = this.#dragDepth(drag, prev, next, map);
+      const parent = this.#parentAtDepth(prev, next, depth, map);
+
       if (parent) {
         parent.setAttribute("nt-drop-parent", "");
-        drag.indicated = parent;
       }
+      // Preview: the dragged tab shows the indent it will get.
+      drag.tab.style.setProperty("--nt-depth", depth);
+      drag.tab.setAttribute("nt-dragging", "");
+
+      // Line + label, positioned from the neighbouring rows.
+      const anchor = prevRect || nextRect;
+      const anchorTab = prev || next;
+      if (!anchor) {
+        return;
+      }
+      const { line, label } = this.#ensureDropOverlay();
+      const rootLeft = anchor.left - this.#depthOf(anchorTab, map) * this.#indentPx;
+      const left = rootLeft + depth * this.#indentPx;
+      const right = anchor.right;
+      let top;
+      if (prevRect && nextRect) {
+        top = (prevRect.bottom + nextRect.top) / 2;
+      } else if (prevRect) {
+        top = prevRect.bottom + 2;
+      } else {
+        top = nextRect.top - 2;
+      }
+      line.style.left = `${left}px`;
+      line.style.width = `${Math.max(24, right - left)}px`;
+      line.style.top = `${top - 1}px`;
+      line.hidden = false;
+
+      const title = parent?.label || parent?.getAttribute("label") || "";
+      label.textContent = parent ? `↳ Inside “${title.length > 28 ? `${title.slice(0, 27)}…` : title}”` : "Top level";
+      label.toggleAttribute("nt-root", !parent);
+      label.style.top = `${top}px`;
+      label.style.left = `${right}px`;
+      label.hidden = false;
+    }
+
+    #ensureDropOverlay() {
+      if (!this.#dropOverlay) {
+        const html = tag => document.createElementNS("http://www.w3.org/1999/xhtml", tag);
+        const line = html("div");
+        line.id = "nt-drop-line";
+        const label = html("div");
+        label.id = "nt-drop-label";
+        line.hidden = label.hidden = true;
+        (document.body || document.documentElement).append(line, label);
+        this.#dropOverlay = { line, label };
+      }
+      return this.#dropOverlay;
     }
 
     #clearDropIndicator() {
       for (const t of document.querySelectorAll(".tabbrowser-tab[nt-drop-parent]")) {
         t.removeAttribute("nt-drop-parent");
       }
-      if (this.#drag) {
-        this.#drag.indicated = null;
+      for (const t of document.querySelectorAll(".tabbrowser-tab[nt-dragging]")) {
+        t.removeAttribute("nt-dragging");
+      }
+      if (this.#dropOverlay) {
+        this.#dropOverlay.line.hidden = true;
+        this.#dropOverlay.label.hidden = true;
       }
     }
 

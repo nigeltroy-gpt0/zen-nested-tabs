@@ -175,10 +175,71 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Drag to nest: outline the tab that will become the parent on drop
+   Drag to nest: where the tab will land
+   - a line at the insertion point, starting at the indent it will get
+   - a label at the end of the line: "↳ Inside …" or "Top level"
+   - the future parent highlighted
+   - the dragged tab previewed at its new indent (if Zen draws it in the list)
    --------------------------------------------------------------------------- */
+#nt-drop-line {
+  position: fixed;
+  z-index: 2147483647;
+  height: 2px;
+  border-radius: 2px;
+  pointer-events: none;
+  background: var(--zen-primary-color, AccentColor);
+
+  /* Dot marking where the indent starts. */
+  &::before {
+    content: "";
+    position: absolute;
+    inset-inline-start: -4px;
+    top: -3px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    box-sizing: border-box;
+    border: 2px solid var(--zen-primary-color, AccentColor);
+    background: var(--zen-colors-tertiary, Canvas);
+  }
+
+  &[hidden] {
+    display: none;
+  }
+}
+
+#nt-drop-label {
+  position: fixed;
+  z-index: 2147483647;
+  translate: -100% -50%;
+  margin-inline-start: -6px;
+  max-width: 220px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: menu;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+  background: var(--zen-primary-color, AccentColor);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+
+  &[nt-root] {
+    color: light-dark(white, black);
+    background: light-dark(rgba(0, 0, 0, 0.75), rgba(255, 255, 255, 0.85));
+  }
+
+  &[hidden] {
+    display: none;
+  }
+}
+
 .tabbrowser-tab[nt-drop-parent] > .tab-stack > .tab-background {
-  outline: 1.5px dashed color-mix(in srgb, var(--zen-primary-color, AccentColor) 80%, transparent) !important;
+  background-color: color-mix(in srgb, var(--zen-primary-color, AccentColor) 22%, transparent) !important;
+  outline: 1.5px solid color-mix(in srgb, var(--zen-primary-color, AccentColor) 80%, transparent) !important;
   outline-offset: -1.5px;
 }
 
