@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.5
+// @version        1.0.6
 // ==/UserScript==
 
 /*
@@ -37,6 +37,11 @@
   const PREF_AUTO_NEST = "mod.nestedtabs.auto_nest";
   const PREF_CLOSE_BEHAVIOR = "mod.nestedtabs.close_behavior";
   const PREF_INDENT = "mod.nestedtabs.indent";
+  const PREF_CARET_POSITION = "mod.nestedtabs.caret_position";
+
+  /** "right" (default) or "left": which end of the tab the caret sits on. */
+  const readCaretPosition = () =>
+    Services.prefs.getStringPref(PREF_CARET_POSITION, "right") === "left" ? "left" : "right";
 
   /**
    * Indent per level in px. Mod managers may store this text setting as a
@@ -94,6 +99,7 @@
     #initialized = false;
     #normalizeQueued = false;
     #indentPx = DEFAULT_INDENT_PX;
+    #caretPosition = "right";
     /** Active tab drag: { tab, subtree, startX, x, clientY, moved, dropped }. */
     #drag = null;
     #dropIndicatorQueued = false;
@@ -106,6 +112,7 @@
       defaults.setBoolPref("mod.nestedtabs.show_guides", true);
       defaults.setBoolPref("mod.nestedtabs.show_count", true);
       defaults.setStringPref(PREF_CLOSE_BEHAVIOR, "promote");
+      defaults.setStringPref(PREF_CARET_POSITION, "right");
 
       await this.#whenDelayedStartupFinished();
       await window.gZenWorkspaces?.promiseInitialized;
@@ -116,6 +123,7 @@
       }
 
       this.#applyIndent();
+      this.#applyCaretPosition();
       this.#patchSidebarMinWidth();
       this.#addListeners();
       this.#addContextMenu();
@@ -482,12 +490,6 @@
       const content = tab.querySelector(".tab-content");
       let twisty = content.querySelector(":scope > .nt-twisty");
       let count = content.querySelector(":scope > .nt-count");
-      if (!twisty) {
-        twisty = document.createXULElement("hbox");
-        twisty.className = "nt-twisty";
-        twisty.setAttribute("role", "button");
-        content.prepend(twisty);
-      }
       if (!count) {
         count = document.createXULElement("hbox");
         count.className = "nt-count";
@@ -497,6 +499,20 @@
         } else {
           content.append(count);
         }
+      }
+      if (!twisty) {
+        twisty = document.createXULElement("hbox");
+        twisty.className = "nt-twisty";
+        twisty.setAttribute("role", "button");
+      }
+      // Left: before the favicon. Right: after the label and counter, before
+      // the audio/close buttons. Only touch the DOM when it is out of place.
+      if (this.#caretPosition === "left") {
+        if (content.firstElementChild !== twisty) {
+          content.prepend(twisty);
+        }
+      } else if (count.nextElementSibling !== twisty) {
+        count.after(twisty);
       }
       return { twisty, count };
     }
@@ -563,6 +579,12 @@
     // -- Events -----------------------------------------------------------------
 
     /** Publish the indent for chrome.css; the width math uses #indentPx. */
+    /** Publish the caret side for chrome.css; #ensureDecorations places it. */
+    #applyCaretPosition() {
+      this.#caretPosition = readCaretPosition();
+      document.documentElement.setAttribute("nt-caret", this.#caretPosition);
+    }
+
     #applyIndent() {
       this.#indentPx = readIndent();
       document.documentElement.style.setProperty("--nt-indent", `${this.#indentPx}px`);
@@ -574,10 +596,20 @@
         this.#applyIndent();
         this.normalize();
       };
+      const caretObserver = () => {
+        this.#applyCaretPosition();
+        this.normalize(); // re-places every caret
+      };
       Services.prefs.addObserver(PREF_INDENT, indentObserver);
-      window.addEventListener("unload", () => Services.prefs.removeObserver(PREF_INDENT, indentObserver), {
-        once: true,
-      });
+      Services.prefs.addObserver(PREF_CARET_POSITION, caretObserver);
+      window.addEventListener(
+        "unload",
+        () => {
+          Services.prefs.removeObserver(PREF_INDENT, indentObserver);
+          Services.prefs.removeObserver(PREF_CARET_POSITION, caretObserver);
+        },
+        { once: true }
+      );
 
       const container = gBrowser.tabContainer;
       container.addEventListener("TabOpen", this);

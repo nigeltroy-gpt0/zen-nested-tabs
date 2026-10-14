@@ -13,6 +13,23 @@
     "defaultValue": "16"
   },
   {
+    "property": "mod.nestedtabs.caret_position",
+    "label": "Expand/collapse caret position",
+    "type": "dropdown",
+    "placeholder": false,
+    "defaultValue": "right",
+    "options": [
+      {
+        "label": "Right side of the tab",
+        "value": "right"
+      },
+      {
+        "label": "Left side, before the icon",
+        "value": "left"
+      }
+    ]
+  },
+  {
     "property": "mod.nestedtabs.show_guides",
     "label": "Show faint indent guide lines",
     "type": "checkbox",
