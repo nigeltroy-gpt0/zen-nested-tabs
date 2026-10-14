@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.6
+// @version        1.0.7
 // ==/UserScript==
 
 /*
@@ -39,9 +39,18 @@
   const PREF_INDENT = "mod.nestedtabs.indent";
   const PREF_CARET_POSITION = "mod.nestedtabs.caret_position";
 
-  /** "right" (default) or "left": which end of the tab the caret sits on. */
-  const readCaretPosition = () =>
-    Services.prefs.getStringPref(PREF_CARET_POSITION, "right") === "left" ? "left" : "right";
+  /**
+   * Where the caret sits:
+   *   "edge"  (default) far right, after the close button, so the close button
+   *           appearing on hover never slides into the caret's spot
+   *   "right" after the title, before the close button
+   *   "left"  before the favicon
+   */
+  const CARET_POSITIONS = ["edge", "right", "left"];
+  const readCaretPosition = () => {
+    const value = Services.prefs.getStringPref(PREF_CARET_POSITION, "edge");
+    return CARET_POSITIONS.includes(value) ? value : "edge";
+  };
 
   /**
    * Indent per level in px. Mod managers may store this text setting as a
@@ -99,7 +108,7 @@
     #initialized = false;
     #normalizeQueued = false;
     #indentPx = DEFAULT_INDENT_PX;
-    #caretPosition = "right";
+    #caretPosition = "edge";
     /** Active tab drag: { tab, subtree, startX, x, clientY, moved, dropped }. */
     #drag = null;
     #dropIndicatorQueued = false;
@@ -112,7 +121,7 @@
       defaults.setBoolPref("mod.nestedtabs.show_guides", true);
       defaults.setBoolPref("mod.nestedtabs.show_count", true);
       defaults.setStringPref(PREF_CLOSE_BEHAVIOR, "promote");
-      defaults.setStringPref(PREF_CARET_POSITION, "right");
+      defaults.setStringPref(PREF_CARET_POSITION, "edge");
 
       await this.#whenDelayedStartupFinished();
       await window.gZenWorkspaces?.promiseInitialized;
@@ -458,6 +467,7 @@
       }
 
       this.#updateSidebarWidth(maxVisibleDepth);
+      this.#updateGuideGap();
     }
 
     #renderTab(tab, depth, hidden, descendants) {
@@ -505,16 +515,45 @@
         twisty.className = "nt-twisty";
         twisty.setAttribute("role", "button");
       }
-      // Left: before the favicon. Right: after the label and counter, before
-      // the audio/close buttons. Only touch the DOM when it is out of place.
+      // See readCaretPosition(). Only touch the DOM when it is out of place.
       if (this.#caretPosition === "left") {
         if (content.firstElementChild !== twisty) {
           content.prepend(twisty);
+        }
+      } else if (this.#caretPosition === "edge") {
+        if (content.lastElementChild !== twisty) {
+          content.append(twisty);
         }
       } else if (count.nextElementSibling !== twisty) {
         count.after(twisty);
       }
       return { twisty, count };
+    }
+
+    /**
+     * Guide lines are drawn per row, on each tab's .tab-stack. To join up
+     * without overlapping (the line is translucent, so overlaps show as darker
+     * joints) each segment extends by exactly half the gap between rows.
+     */
+    #updateGuideGap() {
+      // Any two adjacent visible rows will do; take the first nested one.
+      const tab = gBrowser.tabs.find(
+        t =>
+          t.getAttribute("nt-depth") > 0 &&
+          !t.hasAttribute("nt-hidden") &&
+          t.previousElementSibling?.classList?.contains("tabbrowser-tab") &&
+          !t.previousElementSibling.hasAttribute("nt-hidden")
+      );
+      const above = tab?.previousElementSibling.querySelector(".tab-stack")?.getBoundingClientRect();
+      const below = tab?.querySelector(".tab-stack")?.getBoundingClientRect();
+      if (!above?.height || !below?.height) {
+        return;
+      }
+      const halfGap = Math.max(0, below.top - above.bottom) / 2;
+      const value = `${Math.round(halfGap * 100) / 100}px`;
+      if (document.documentElement.style.getPropertyValue("--nt-guide-overhang") !== value) {
+        document.documentElement.style.setProperty("--nt-guide-overhang", value);
+      }
     }
 
     // -- Sidebar width ----------------------------------------------------------

@@ -17,14 +17,18 @@
     "label": "Expand/collapse caret position",
     "type": "dropdown",
     "placeholder": false,
-    "defaultValue": "right",
+    "defaultValue": "edge",
     "options": [
       {
-        "label": "Right side of the tab",
+        "label": "Far right, after the close button",
+        "value": "edge"
+      },
+      {
+        "label": "Right, before the close button",
         "value": "right"
       },
       {
-        "label": "Left side, before the icon",
+        "label": "Left, before the icon",
         "value": "left"
       }
     ]

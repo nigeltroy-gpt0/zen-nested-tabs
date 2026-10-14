@@ -65,7 +65,7 @@
   flex: 0 0 auto;
   width: var(--nt-twisty-size);
   height: var(--nt-twisty-size);
-  /* Right side (default): sits between the label/counter and the close button. */
+  /* "right": between the label/counter and the close button. */
   margin-inline: 2px -2px;
   border-radius: 4px;
   opacity: 0.55;
@@ -88,6 +88,12 @@
     opacity: 1;
     background-color: var(--zen-toolbar-element-bg-hover, rgba(127, 127, 127, 0.15));
   }
+}
+
+/* Far right edge: after the close button, pulled into the end padding. */
+:root:not([nt-caret])[zen-sidebar-expanded="true"] .tabbrowser-tab[nt-has-children]:not([zen-essential]) .nt-twisty,
+:root[nt-caret="edge"][zen-sidebar-expanded="true"] .tabbrowser-tab[nt-has-children]:not([zen-essential]) .nt-twisty {
+  margin-inline: 2px -4px;
 }
 
 /* Left side: before the favicon, pulled into the tab's start padding. */
@@ -144,7 +150,9 @@
       content: "";
       position: absolute;
       pointer-events: none;
-      inset-block: -2px;
+      /* The script measures the gap between rows and sets the overhang to half
+         of it, so neighbouring segments meet exactly instead of overlapping. */
+      inset-block: calc(-1 * var(--nt-guide-overhang, 0px));
       inset-inline-start: calc(var(--nt-depth) * var(--nt-indent) * -1);
       width: calc(var(--nt-depth) * var(--nt-indent));
       background-image: repeating-linear-gradient(
