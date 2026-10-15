@@ -175,11 +175,12 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Drag to nest: where the tab will land
-   - a line at the insertion point, starting at the indent it will get
+   Drag and drop: where the tab will land
+   - a line in the gap it will drop into, starting (at the dot) at the indent
+     it will get
    - a label at the end of the line: "↳ Inside …" or "Top level"
    - the future parent highlighted
-   - the dragged tab previewed at its new indent (if Zen draws it in the list)
+   - the dragged tab (and its subtree) dimmed in place while it is moving
    --------------------------------------------------------------------------- */
 #nt-drop-line {
   position: fixed;
@@ -241,6 +242,10 @@
   background-color: color-mix(in srgb, var(--zen-primary-color, AccentColor) 22%, transparent) !important;
   outline: 1.5px solid color-mix(in srgb, var(--zen-primary-color, AccentColor) 80%, transparent) !important;
   outline-offset: -1.5px;
+}
+
+.tabbrowser-tab[nt-drag-source] {
+  opacity: 0.4;
 }
 
 /* Context menu items are only shown when they apply (JS toggles [hidden]). */

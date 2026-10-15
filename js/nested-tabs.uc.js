@@ -2,7 +2,7 @@
 // @name           Zen Nested Tabs
 // @description    Tree Style Tab-like nesting for Zen Browser's vertical tabs.
 // @include        main
-// @version        1.0.10
+// @version        1.1.0
 // ==/UserScript==
 
 /*
@@ -114,9 +114,8 @@
     #normalizeQueued = false;
     #indentPx = DEFAULT_INDENT_PX;
     #caretPosition = "edge";
-    /** Active tab drag: { tab, subtree, clientX, clientY, grabOffset, delta, moved, dropped }. */
+    /** Active tab drag, see #onDragStart. */
     #drag = null;
-    #dropIndicatorQueued = false;
     #dropOverlay = null;
 
     async init() {
@@ -323,6 +322,29 @@
       }
     }
 
+    /** Move `tab` to directly before `target`, without triggering our TabMove logic. */
+    #moveBefore(tab, target) {
+      if (tab === target || tab.nextElementSibling === target) {
+        return;
+      }
+      this.#internalMoves++;
+      try {
+        if (typeof gBrowser.moveTabBefore === "function") {
+          gBrowser.moveTabBefore(tab, target);
+        } else {
+          let index = target._tPos;
+          if (tab._tPos < index) {
+            index--;
+          }
+          gBrowser.moveTabTo(tab, { tabIndex: index });
+        }
+      } catch (e) {
+        console.error("[Zen Nested Tabs] move failed", e);
+      } finally {
+        this.#internalMoves--;
+      }
+    }
+
     /** Keep `tab`'s subtree (`descendants`, in order) directly below it. */
     #bringDescendants(tab, descendants) {
       let anchor = tab;
@@ -334,18 +356,46 @@
       }
     }
 
+    /**
+     * The core tree operation: make `tab`, with its whole subtree, a child of
+     * `parent` (null = top level), placed directly after `after` in sidebar
+     * order (null = first in its list). Every structural change (drag and
+     * drop, nest, un-nest, auto-nesting new tabs) goes through here.
+     */
+    moveSubtree(tab, parent, after) {
+      const subtree = this.descendantsOf(tab);
+      if (
+        (parent && (parent === tab || subtree.includes(parent) || parent.parentNode !== tab.parentNode)) ||
+        (after && (after === tab || subtree.includes(after) || after.parentNode !== tab.parentNode))
+      ) {
+        return; // would create a cycle or cross lists
+      }
+      this.setParent(tab, parent);
+      if (after) {
+        this.#moveAfter(tab, after);
+      } else {
+        const first = this.#siblingsInContainer(tab).find(t => t !== tab);
+        if (first) {
+          this.#moveBefore(tab, first);
+        }
+      }
+      this.#bringDescendants(tab, subtree);
+      this.#expandAncestors(tab); // never drop a tab into a folded tree
+      this.normalize();
+    }
+
+    /** The last tab of `tab`'s subtree in sidebar order (or `tab`), skipping `exclude`. */
+    #lastDescendant(tab, exclude = new Set()) {
+      return this.descendantsOf(tab).filter(t => !exclude.has(t)).at(-1) || tab;
+    }
+
     /** Make `tab` the last child of `parent` (moving it and its subtree). */
     nestUnder(tab, parent) {
       if (!this.isEligible(tab) || !this.isEligible(parent) || tab.parentNode !== parent.parentNode) {
         return;
       }
-      const subtree = this.descendantsOf(tab);
-      const parentSubtree = this.descendantsOf(parent).filter(t => t !== tab && !subtree.includes(t));
-      this.setParent(tab, parent);
-      this.setCollapsed(parent, false);
-      this.#moveAfter(tab, parentSubtree.at(-1) || parent);
-      this.#bringDescendants(tab, subtree);
-      this.normalize();
+      const subtree = new Set([tab, ...this.descendantsOf(tab)]);
+      this.moveSubtree(tab, parent, this.#lastDescendant(parent, subtree));
     }
 
     /** Context menu: become the last child of the sibling above. */
@@ -362,12 +412,8 @@
       if (!parent) {
         return;
       }
-      const subtree = this.descendantsOf(tab);
-      const parentSubtree = this.descendantsOf(parent).filter(t => t !== tab && !subtree.includes(t));
-      this.setParent(tab, this.parentOf(parent));
-      this.#moveAfter(tab, parentSubtree.at(-1) || parent);
-      this.#bringDescendants(tab, subtree);
-      this.normalize();
+      const subtree = new Set([tab, ...this.descendantsOf(tab)]);
+      this.moveSubtree(tab, this.parentOf(parent), this.#lastDescendant(parent, subtree));
     }
 
     #previousSibling(tab) {
@@ -723,8 +769,8 @@
         container.addEventListener(type, this, true);
       }
 
-      // Drag right/left to nest/un-nest. Zen's own drag & drop still does the
-      // reordering; we only read the pointer to decide the new level.
+      // Drag and drop within a list (see "Drag and drop" below). Capture on the
+      // window so we see the events before Zen/Firefox's tab strip does.
       for (const type of ["dragover", "drop", "dragend"]) {
         window.addEventListener(type, this, true);
       }
@@ -755,8 +801,10 @@
           }
           break;
         case "dragover":
-        case "drop":
           this.#onDragOver(event);
+          break;
+        case "drop":
+          this.#onDrop(event);
           break;
         case "dragend":
           this.#onDragEnd();
@@ -876,9 +924,10 @@
     }
 
     /**
-     * A tab was moved by the user (drag & drop, keyboard, another add-on).
-     * Like TST, its new parent comes from where it landed, and its subtree
-     * follows it.
+     * A tab was moved by something other than us: keyboard shortcuts, Zen
+     * (e.g. a drag to another list), or another add-on. Drags within a list
+     * are handled by our own drag and drop and never get here. Like TST, its
+     * new parent comes from where it landed, and its subtree follows it.
      */
     #onTabMove(tab) {
       if (this.#internalMoves || !this.#initialized || !this.isEligible(tab) || tab._ntPending) {
@@ -904,14 +953,8 @@
         }
       }
 
-      const drag = this.#drag?.tab === tab ? this.#drag : null;
-      if (drag) {
-        drag.moved = true;
-      }
       const { prev, next } = this.#neighbors(tab, subtree);
-      const newParent = drag
-        ? this.#dropParentFor(drag, prev, next, map)
-        : this.#positionalParent(prev, next, map);
+      const newParent = this.#positionalParent(prev, next, map);
       this.setParent(tab, newParent);
       if (newParent) {
         this.#expandAncestors(tab);
@@ -959,90 +1002,20 @@
       return depth;
     }
 
-    /** Valid depth range for a tab placed between `prev` and `next`. */
-    #depthRange(prev, next, map) {
-      if (!prev) {
-        return { min: 0, max: 0 };
-      }
-      // At most a child of `prev`; at least `next`'s depth so `next` keeps its parent.
-      const max = this.#depthOf(prev, map) + 1;
-      const min = Math.min(max, next ? this.#depthOf(next, map) : 0);
-      return { min, max };
-    }
-
-    /**
-     * Drag gesture, judged from where the dragged tab's left edge would be
-     * (pointer position minus where the tab was grabbed), relative to the tab
-     * above the drop point (`prev`):
-     *   - past prev's indent + max(half an indent, 12px) -> its child (+1)
-     *   - otherwise, near prev's indent                   -> its sibling (0)
-     *   - more than half an indent left of prev's indent  -> step out to the
-     *     nearest shallower level (-1, -2, ...)
-     * The child/sibling switch point moves 4px once chosen, so it doesn't
-     * flicker. Returns the depth relative to prev, clamped to what keeps the
-     * tree valid (the tab below must keep its parent).
-     */
-    #dragDelta(drag, prev, next, map) {
-      if (!prev) {
-        return 0; // top of the list: top level
-      }
-      const prevDepth = this.#depthOf(prev, map);
-      const { min, max } = this.#depthRange(prev, next, map);
-      const indent = this.#indentPx;
-      const prevLeft = prev.getBoundingClientRect().left;
-      const edge = drag.clientX - drag.grabOffset;
-      const key = `${prev._ntId}|${next?._ntId}`;
-
-      let childAt = prevLeft + Math.max(indent / 2, 12);
-      if (drag.deltaKey === key) {
-        childAt += drag.delta === 1 ? -4 : 4; // hysteresis
-      }
-      let depth;
-      if (edge >= childAt) {
-        depth = prevDepth + 1;
-      } else if (edge >= prevLeft - indent / 2) {
-        depth = prevDepth;
-      } else {
-        depth = Math.round((edge - (prevLeft - prevDepth * indent)) / indent);
-        depth = Math.min(prevDepth - 1, depth);
-      }
-      depth = Math.max(min, Math.min(max, depth));
-      drag.delta = depth - prevDepth;
-      drag.deltaKey = key;
-      return drag.delta;
-    }
-
-    /** The parent at `depth` for a tab placed between `prev` and `next`. */
-    #parentAtDepth(prev, next, depth, map) {
-      const { min, max } = this.#depthRange(prev, next, map);
-      depth = Math.max(min, Math.min(max, depth));
-      if (!prev || depth === 0) {
-        return null;
-      }
-      let parent = prev;
-      for (let d = this.#depthOf(prev, map); parent && d > depth - 1; d--) {
-        parent = this.parentOf(parent, map);
-      }
-      return parent;
-    }
-
-    /**
-     * Parent for the dropped tab: the level the indicator was showing,
-     * relative to the tab above, so what you saw is what you get.
-     */
-    #dropParentFor(drag, prev, next, map) {
-      // Apply the indicated level to the tab that actually ended up above it;
-      // #parentAtDepth re-clamps against the real neighbours.
-      const delta = drag.delta ?? this.#dragDelta(drag, prev, next, map);
-      const depth = prev ? this.#depthOf(prev, map) + delta : 0;
-      return this.#parentAtDepth(prev, next, depth, map);
-    }
-
-    // -- Drag to nest -----------------------------------------------------------
+    // -- Drag and drop ------------------------------------------------------------
+    //
+    // While the pointer is over the dragged tab's own list, we own the drag:
+    // Zen/Firefox's reordering is bypassed and the drop is one tree operation
+    // (moveSubtree). The pointer picks the target:
+    //   - vertical position -> the gap between two visible rows
+    //   - horizontal position of the dragged tab's left edge -> the level,
+    //     snapped to the nearest level that is valid in that gap
+    // The indicator shows exactly that target and the drop applies it. Drags
+    // that leave the list (Essentials, pinned tabs, folders, other spaces or
+    // windows) are left to Zen; the tree then handles the list change.
 
     #onDragStart(event) {
-      this.#clearDropIndicator();
-      this.#drag = null;
+      this.#endDrag();
       const tab = event.target.closest?.(".tabbrowser-tab");
       if (
         !tab ||
@@ -1050,22 +1023,42 @@
         window.gNavToolbox.getAttribute("zen-sidebar-expanded") !== "true" ||
         (tab.multiselected && gBrowser.selectedTabs.length > 1)
       ) {
-        return; // multi-tab drags keep the plain drop rule
+        return; // multi-tab drags and the icon-only sidebar keep Zen's handling
       }
-      const map = this.#idMap();
-      const subtree = new Set(gBrowser.tabs.filter(t => t !== tab && this.#isAncestor(tab, t, map)));
       this.#drag = {
         tab,
-        subtree,
-        clientX: event.clientX,
-        clientY: event.clientY,
+        list: tab.parentNode,
+        subtree: new Set(this.descendantsOf(tab)),
         // Where on the tab it was grabbed, so we know where its left edge is.
         grabOffset: event.clientX - tab.getBoundingClientRect().left,
-        moved: false,
-        dropped: false,
-        delta: null,
-        deltaKey: null,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        target: null,
+        expandTimer: 0,
+        expandKey: null,
       };
+      for (const t of [tab, ...this.#drag.subtree]) {
+        t.setAttribute("nt-drag-source", "");
+      }
+    }
+
+    /** Is the pointer over the dragged tab's own list (where we own the drop)? */
+    #isOverOwnList(event) {
+      const list = this.#drag?.list;
+      const node = event.target;
+      if (!list || !node?.closest) {
+        return false;
+      }
+      const row = node.closest(".tabbrowser-tab");
+      if (row) {
+        return row.parentNode === list && this.isEligible(row);
+      }
+      if (node !== list && !list.contains(node)) {
+        return false;
+      }
+      // Empty space in the list is ours; a folder nested inside it is Zen's.
+      const folder = node.closest("zen-folder");
+      return !folder || !list.contains(folder);
     }
 
     #onDragOver(event) {
@@ -1073,121 +1066,170 @@
       if (!drag) {
         return;
       }
-      // Some platforms report 0,0 for synthetic drag events; ignore those.
-      if (event.screenX || event.screenY) {
+      if (!this.#isOverOwnList(event)) {
+        drag.target = null;
+        this.#hideDropIndicator();
+        this.#cancelAutoExpand();
+        return; // Zen handles drags into other lists
+      }
+      event.preventDefault(); // we accept the drop here...
+      event.stopPropagation(); // ...and Zen/Firefox's reordering doesn't run
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      if (event.clientX || event.clientY) {
         drag.clientX = event.clientX;
         drag.clientY = event.clientY;
-        drag.overTabs = !!event.target.closest?.("#tabbrowser-tabs, .zen-workspace-tabs-section");
       }
-      if (event.type === "drop") {
-        drag.dropped = true;
-        this.#clearDropIndicator();
+      this.#autoScroll(drag);
+      drag.target = this.#dropTarget(drag);
+      this.#showDropIndicator(drag);
+      this.#scheduleAutoExpand(drag);
+    }
+
+    #onDrop(event) {
+      const drag = this.#drag;
+      if (!drag || !this.#isOverOwnList(event)) {
         return;
       }
-      if (!this.#dropIndicatorQueued) {
-        this.#dropIndicatorQueued = true;
-        requestAnimationFrame(() => {
-          this.#dropIndicatorQueued = false;
-          this.#updateDropIndicator();
-        });
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.clientX || event.clientY) {
+        drag.clientX = event.clientX;
+        drag.clientY = event.clientY;
+      }
+      const target = this.#dropTarget(drag);
+      this.#endDrag();
+      if (target) {
+        this.moveSubtree(drag.tab, target.parent, target.after);
       }
     }
 
     #onDragEnd() {
+      this.#endDrag();
+    }
+
+    #endDrag() {
       const drag = this.#drag;
-      this.#clearDropIndicator();
-      if (!drag) {
-        return;
-      }
-      // Firefox fires no TabMove when a tab is dropped where it already was,
-      // which is exactly the "drag right to indent in place" case.
-      setTimeout(() => {
-        if (this.#drag === drag) {
-          if (drag.dropped && !drag.moved && drag.tab.isConnected) {
-            this.#onTabMove(drag.tab);
-          }
-          this.#drag = null;
-          this.scheduleNormalize(); // drop the live depth preview if cancelled
+      this.#drag = null;
+      this.#hideDropIndicator();
+      if (drag) {
+        clearTimeout(drag.expandTimer);
+        for (const t of [drag.tab, ...drag.subtree]) {
+          t.removeAttribute("nt-drag-source");
         }
-      }, 50);
+      }
     }
 
     /**
-     * Show where the tab will land: a line at the insertion point, starting at
-     * the indent it will get, a label ("Inside …" / "Top level"), an outline on
-     * the future parent, and the dragged tab itself previewed at that depth.
+     * Where the dragged tab would go if dropped now:
+     *   { parent, after, depth, key, y, left, right }
+     * `parent` and `after` are the moveSubtree() arguments; the rest is for
+     * the indicator. Returns null if there is nowhere to go.
      */
-    #updateDropIndicator() {
-      this.#clearDropIndicator();
-      const drag = this.#drag;
-      if (!drag || drag.dropped || !drag.overTabs) {
-        return;
-      }
-      const list = this.#siblingsInContainer(drag.tab).filter(
-        t => t !== drag.tab && !drag.subtree.has(t) && !t._ntPending && !t.hasAttribute("nt-hidden")
-      );
-      let prev = null;
-      let next = null;
-      let prevRect = null;
-      let nextRect = null;
-      for (const t of list) {
-        const rect = t.getBoundingClientRect();
-        if (!rect.height) {
+    #dropTarget(drag) {
+      const map = this.#idMap();
+      const indent = this.#indentPx;
+
+      // Visible rows, without the dragged tab and its subtree.
+      const rows = [];
+      for (const tab of this.#siblingsInContainer(drag.tab)) {
+        if (tab === drag.tab || drag.subtree.has(tab) || tab._ntPending || tab.hasAttribute("nt-hidden")) {
           continue;
         }
-        if (rect.top + rect.height / 2 < drag.clientY) {
-          prev = t;
-          prevRect = rect;
-        } else {
-          next = t;
-          nextRect = rect;
-          break;
+        const rect = tab.getBoundingClientRect();
+        if (rect.height) {
+          rows.push({ tab, rect, depth: this.#depthOf(tab, map) });
         }
       }
-      const map = this.#idMap();
-      const delta = this.#dragDelta(drag, prev, next, map);
-      const depth = prev ? this.#depthOf(prev, map) + delta : 0;
-      const parent = this.#parentAtDepth(prev, next, depth, map);
-
-      if (parent) {
-        parent.setAttribute("nt-drop-parent", "");
+      if (!rows.length) {
+        return null;
       }
-      // Preview: the dragged tab shows the indent it will get.
-      drag.tab.style.setProperty("--nt-depth", depth);
-      drag.tab.setAttribute("nt-dragging", "");
 
-      // Line + label, positioned from the neighbouring rows.
-      const anchor = prevRect || nextRect;
-      const anchorTab = prev || next;
-      if (!anchor) {
+      // Gap: the pointer is above the middle of `next` and below the middle of `prev`.
+      let index = rows.findIndex(r => drag.clientY < r.rect.top + r.rect.height / 2);
+      if (index === -1) {
+        index = rows.length;
+      }
+      const prev = rows[index - 1] || null;
+      const next = rows[index] || null;
+
+      // Valid levels in this gap: at most a child of `prev`; at least `next`'s
+      // level, so `next` keeps its parent.
+      const max = prev ? prev.depth + 1 : 0;
+      const min = Math.min(max, next ? next.depth : 0);
+
+      // Level from the dragged tab's left edge, snapped to the nearest valid
+      // one. Once chosen it sticks until the edge is well into another level.
+      const ref = prev || next;
+      const rootLeft = ref.rect.left - ref.depth * indent;
+      const level = (drag.clientX - drag.grabOffset - rootLeft) / indent;
+      const key = `${prev?.tab._ntId}|${next?.tab._ntId}`;
+      let depth = Math.round(level);
+      if (drag.target?.key === key && Math.abs(level - drag.target.depth) < 0.65) {
+        depth = drag.target.depth;
+      }
+      depth = Math.max(min, Math.min(max, depth));
+
+      // Tree position: the parent at that level, and the tab to insert after.
+      let parent = null;
+      if (depth > 0) {
+        parent = prev.tab;
+        for (let d = prev.depth; parent && d > depth - 1; d--) {
+          parent = this.parentOf(parent, map);
+        }
+      }
+      let after = null;
+      if (prev) {
+        const moving = new Set([drag.tab, ...drag.subtree]);
+        after = depth === prev.depth + 1 ? prev.tab : this.#lastDescendant(prev.tab, moving);
+      }
+
+      let y;
+      if (prev && next) {
+        y = (prev.rect.bottom + next.rect.top) / 2;
+      } else if (prev) {
+        y = prev.rect.bottom + 2;
+      } else {
+        y = next.rect.top - 2;
+      }
+      return { parent, after, depth, key, prevTab: prev?.tab || null, y, left: rootLeft + depth * indent, right: ref.rect.right };
+    }
+
+    /** Line (with a dot where the indent starts) + label + parent highlight. */
+    #showDropIndicator(drag) {
+      this.#hideDropIndicator();
+      const target = drag.target;
+      if (!target) {
         return;
       }
-      const { line, label } = this.#ensureDropOverlay();
-      // Starts at the tab above's indent (sibling), one indent further in
-      // (child), or further out when stepping out levels.
-      const left = prevRect
-        ? prevRect.left + delta * this.#indentPx
-        : anchor.left - this.#depthOf(anchorTab, map) * this.#indentPx;
-      const right = anchor.right;
-      let top;
-      if (prevRect && nextRect) {
-        top = (prevRect.bottom + nextRect.top) / 2;
-      } else if (prevRect) {
-        top = prevRect.bottom + 2;
-      } else {
-        top = nextRect.top - 2;
+      if (target.parent) {
+        target.parent.setAttribute("nt-drop-parent", "");
       }
-      line.style.left = `${left}px`;
-      line.style.width = `${Math.max(24, right - left)}px`;
-      line.style.top = `${top - 1}px`;
+      const { line, label } = this.#ensureDropOverlay();
+      line.style.left = `${target.left}px`;
+      line.style.width = `${Math.max(24, target.right - target.left)}px`;
+      line.style.top = `${target.y - 1}px`;
       line.hidden = false;
 
-      const title = parent?.label || parent?.getAttribute("label") || "";
-      label.textContent = parent ? `↳ Inside “${title.length > 28 ? `${title.slice(0, 27)}…` : title}”` : "Top level";
-      label.toggleAttribute("nt-root", !parent);
-      label.style.top = `${top}px`;
-      label.style.left = `${right}px`;
+      const title = target.parent?.label || target.parent?.getAttribute("label") || "";
+      label.textContent = target.parent
+        ? `↳ Inside “${title.length > 28 ? `${title.slice(0, 27)}…` : title}”`
+        : "Top level";
+      label.toggleAttribute("nt-root", !target.parent);
+      label.style.top = `${target.y}px`;
+      label.style.left = `${target.right}px`;
       label.hidden = false;
+    }
+
+    #hideDropIndicator() {
+      for (const t of document.querySelectorAll(".tabbrowser-tab[nt-drop-parent]")) {
+        t.removeAttribute("nt-drop-parent");
+      }
+      if (this.#dropOverlay) {
+        this.#dropOverlay.line.hidden = true;
+        this.#dropOverlay.label.hidden = true;
+      }
     }
 
     #ensureDropOverlay() {
@@ -1204,16 +1246,51 @@
       return this.#dropOverlay;
     }
 
-    #clearDropIndicator() {
-      for (const t of document.querySelectorAll(".tabbrowser-tab[nt-drop-parent]")) {
-        t.removeAttribute("nt-drop-parent");
+    /** Hovering as a child of a collapsed tab for a moment expands it. */
+    #scheduleAutoExpand(drag) {
+      const prev = drag.target?.prevTab;
+      const wantsInside = prev && drag.target.parent === prev && prev._ntCollapsed;
+      const key = wantsInside ? prev._ntId : null;
+      if (key === drag.expandKey) {
+        return;
       }
-      for (const t of document.querySelectorAll(".tabbrowser-tab[nt-dragging]")) {
-        t.removeAttribute("nt-dragging");
+      this.#cancelAutoExpand();
+      drag.expandKey = key;
+      if (wantsInside) {
+        drag.expandTimer = setTimeout(() => {
+          if (this.#drag === drag && prev.isConnected) {
+            this.setCollapsed(prev, false);
+            this.normalize();
+          }
+        }, 600);
       }
-      if (this.#dropOverlay) {
-        this.#dropOverlay.line.hidden = true;
-        this.#dropOverlay.label.hidden = true;
+    }
+
+    #cancelAutoExpand() {
+      const drag = this.#drag;
+      if (drag) {
+        clearTimeout(drag.expandTimer);
+        drag.expandTimer = 0;
+        drag.expandKey = null;
+      }
+    }
+
+    /** Scroll the tab list while dragging near its top or bottom edge. */
+    #autoScroll(drag) {
+      const box = drag.list.closest?.("arrowscrollbox") || gBrowser.tabContainer.arrowScrollbox;
+      if (!box?.scrollByPixels || !box.getBoundingClientRect) {
+        return;
+      }
+      const rect = box.getBoundingClientRect();
+      const zone = 36;
+      let dy = 0;
+      if (drag.clientY < rect.top + zone) {
+        dy = -Math.ceil((rect.top + zone - drag.clientY) / 3);
+      } else if (drag.clientY > rect.bottom - zone) {
+        dy = Math.ceil((drag.clientY - (rect.bottom - zone)) / 3);
+      }
+      if (dy) {
+        box.scrollByPixels(dy, true);
       }
     }
 
